@@ -2,7 +2,8 @@
 
 A lightweight, self-hosted CRM for managing a book collection, the members who borrow from it, and the loans between them.
 
-- **Zero dependencies** — Python 3 standard library + SQLite. No `pip install`, no build step.
+- **No dependencies locally** — Python 3 standard library + SQLite. No `pip install`, no build step.
+- **Deploys to Heroku** — uses Heroku Postgres there (one dependency, `psycopg`), with password protection.
 - **Single-page web UI** — works on desktop and mobile, follows your system's light/dark mode.
 - **Local-first** — all data lives in one SQLite file on your machine.
 
@@ -42,7 +43,7 @@ A lightweight, self-hosted CRM for managing a book collection, the members who b
 
 ## Requirements
 
-- Python **3.8+** (uses only the standard library)
+- Python **3.8+** locally (standard library only); Heroku uses Python 3.13
 - Any modern browser
 
 ## Getting started
@@ -73,7 +74,36 @@ Adds 6 books, 3 members and 3 loans (one overdue). Running it again adds duplica
 
 Example: `python3 server.py --port 9000 --db ~/library.db`
 
-> ⚠️ There is no login. Keep the default `--host 127.0.0.1` unless you put the app behind your own authentication.
+### Environment variables
+
+| Variable | Description |
+|---|---|
+| `DATABASE_URL` | `postgres://…` — store data in Postgres instead of SQLite (requires `pip install -r requirements.txt`) |
+| `PORT` | Port to listen on (Heroku sets this) |
+| `BASIC_AUTH_USER` / `BASIC_AUTH_PASSWORD` | When both are set, the browser asks for this username and password |
+
+> ⚠️ Without `BASIC_AUTH_*` there is no login. Keep the default `--host 127.0.0.1` locally unless you set a password.
+
+---
+
+## Deploy to Heroku
+
+Heroku's filesystem is wiped on every restart, so the app **must** use Heroku Postgres there; it refuses to start on Heroku without `DATABASE_URL` and a password. Heroku has no free tier — an Eco/Basic dyno plus the `essential-0` Postgres plan costs roughly $10–12/month in total.
+
+```bash
+heroku login
+heroku create <app-name>
+heroku addons:create heroku-postgresql:essential-0
+heroku config:set BASIC_AUTH_USER=admin BASIC_AUTH_PASSWORD='<choose-a-strong-password>'
+git push heroku main
+heroku open
+```
+
+Optional: load sample data into the Heroku database with `heroku run python3 seed.py`.
+
+Useful commands: `heroku logs --tail` (server log), `heroku pg:backups:capture` and `heroku pg:backups:download` (database backup).
+
+The repository's `app.json` also lets you create the app, database and a generated password in one go from the Heroku dashboard.
 
 ---
 
@@ -97,10 +127,14 @@ Rows that fail validation are skipped and listed after the import.
 
 ```
 .
-├── server.py          # HTTP server, REST API and SQLite data layer
+├── server.py          # HTTP server, REST API and data layer (SQLite or Postgres)
 ├── seed.py            # Optional sample data loader
 ├── static/
 │   └── index.html     # Single-page web UI (HTML + CSS + vanilla JS)
+├── Procfile           # Heroku: how to start the web process
+├── requirements.txt   # Heroku: Postgres driver (psycopg)
+├── .python-version    # Heroku: Python version
+├── app.json           # Heroku: app manifest (Postgres add-on, config vars)
 ├── .claude/
 │   └── launch.json    # Dev-server config for Claude Code
 ├── .gitignore
@@ -148,4 +182,4 @@ curl -X POST localhost:8000/api/books \
 
 ## Backups
 
-All data is in the single database file. To back it up, copy `books.db` while the server is stopped, or export your books via CSV.
+Locally, all data is in the single database file: copy `books.db` while the server is stopped, or export your books via CSV. On Heroku, use `heroku pg:backups:capture`.

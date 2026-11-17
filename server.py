@@ -1,17 +1,27 @@
 #!/usr/bin/env python3
-"""Book Repository CRM — zero-dependency server (Python stdlib + SQLite).
+"""Book Repository CRM — Python stdlib server backed by SQLite (local) or Postgres (Heroku).
 
-Run:  python3 server.py [--port 8000] [--db books.db]
+Run locally:  python3 server.py [--port 8000] [--db books.db]
 Then open http://localhost:8000
+
+Environment variables:
+  DATABASE_URL          postgres://... — use Postgres instead of SQLite (needs `psycopg`)
+  PORT                  port to listen on (set by Heroku)
+  BASIC_AUTH_USER       when both are set, every request needs this username/password
+  BASIC_AUTH_PASSWORD   (both are required when running on Heroku)
 """
 import argparse
+import base64
+import hmac
+import os
+import sys
 import csv
 import io
 import json
 import re
 import sqlite3
 import threading
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -20,7 +30,7 @@ ROOT = Path(__file__).resolve().parent
 STATIC = ROOT / "static"
 DB_LOCK = threading.Lock()
 
-SCHEMA = """
+SQLITE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS books (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     title TEXT NOT NULL,
@@ -64,6 +74,12 @@ CREATE INDEX IF NOT EXISTS idx_loans_book ON loans(book_id);
 CREATE INDEX IF NOT EXISTS idx_loans_member ON loans(member_id);
 """
 
+PG_NOW = "to_char(now() AT TIME ZONE 'utc', 'YYYY-MM-DD HH24:MI:SS')"
+PG_SCHEMA = (
+    SQLITE_SCHEMA.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
+    .replace("(datetime('now'))", f"({PG_NOW})")
+)
+
 BOOK_FIELDS = ["title", "author", "isbn", "genre", "publisher", "year", "copies", "location", "tags", "notes"]
 MEMBER_FIELDS = ["name", "email", "phone", "address", "notes"]
 
@@ -81,12 +97,21 @@ FROM members m
 """
 
 LOAN_SELECT = """
-SELECT l.*, b.title AS book_title, b.author AS book_author, m.name AS member_name, m.email AS member_email,
-       CASE WHEN l.returned_on IS NOT NULL THEN 'returned'
-            WHEN l.due_on < date('now', 'localtime') THEN 'overdue'
-            ELSE 'active' END AS status
+SELECT l.*, b.title AS book_title, b.author AS book_author, m.name AS member_name, m.email AS member_email
 FROM loans l JOIN books b ON b.id = l.book_id JOIN members m ON m.id = l.member_id
 """
+
+
+def today():
+    return date.today().isoformat()
+
+
+def with_status(loan):
+    if loan is not None:
+        loan["status"] = (
+            "returned" if loan["returned_on"] else "overdue" if loan["due_on"] < today() else "active"
+        )
+    return loan
 
 
 class ApiError(Exception):
@@ -97,23 +122,73 @@ class ApiError(Exception):
 
 
 class Store:
-    def __init__(self, path):
-        self.conn = sqlite3.connect(path, check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
-        self.conn.execute("PRAGMA foreign_keys = ON")
-        self.conn.executescript(SCHEMA)
+    """Thin data layer that runs the same SQL on SQLite or Postgres (`?` placeholders are translated)."""
+
+    def __init__(self, path=None, database_url=None):
+        self.url = database_url
+        self.path = path
+        self._conn = None
+        if self.url:
+            import psycopg  # noqa: F401 — fail fast if missing
+            with self.conn.cursor() as cur:
+                cur.execute(PG_SCHEMA)
+        else:
+            self.conn.executescript(SQLITE_SCHEMA)
         self.conn.commit()
 
+    @property
+    def conn(self):
+        if self.url:
+            import psycopg
+            from psycopg.rows import dict_row
+            if self._conn is None or self._conn.closed or self._conn.broken:
+                self._conn = psycopg.connect(self.url, row_factory=dict_row)
+        elif self._conn is None:
+            self._conn = sqlite3.connect(self.path, check_same_thread=False)
+            self._conn.row_factory = sqlite3.Row
+            self._conn.execute("PRAGMA foreign_keys = ON")
+        return self._conn
+
     # -- helpers -----------------------------------------------------------
+    def exec(self, sql, args=()):
+        if self.url:
+            cur = self.conn.cursor()
+            cur.execute(sql.replace("?", "%s"), tuple(args))
+            return cur
+        return self.conn.execute(sql, tuple(args))
+
     def q(self, sql, args=()):
-        return [dict(r) for r in self.conn.execute(sql, args).fetchall()]
+        return [dict(r) for r in self.exec(sql, args).fetchall()]
 
     def one(self, sql, args=()):
-        r = self.conn.execute(sql, args).fetchone()
+        r = self.exec(sql, args).fetchone()
         return dict(r) if r else None
 
+    def insert(self, table, data):
+        cols = list(data)
+        row = self.exec(
+            f"INSERT INTO {table} ({','.join(cols)}) VALUES ({','.join('?' * len(cols))}) RETURNING id",
+            [data[c] for c in cols],
+        ).fetchone()
+        return row["id"] if isinstance(row, dict) or hasattr(row, "keys") else row[0]
+
+    def loans_where(self, where="", args=(), order="l.loaned_on DESC, l.id DESC"):
+        sql = LOAN_SELECT + (f" WHERE {where}" if where else "") + f" ORDER BY {order}"
+        return [with_status(r) for r in self.q(sql, args)]
+
+    def get_loan(self, lid):
+        rows = self.loans_where("l.id = ?", (lid,))
+        return rows[0] if rows else None
+
+    def rollback(self):
+        if self._conn is not None:
+            try:
+                self._conn.rollback()
+            except Exception:
+                self._conn = None
+
     def log(self, kind, message):
-        self.conn.execute("INSERT INTO activity (kind, message) VALUES (?, ?)", (kind, message))
+        self.exec("INSERT INTO activity (kind, message) VALUES (?, ?)", (kind, message))
 
     # -- books -------------------------------------------------------------
     def clean_book(self, data, partial=False):
@@ -148,13 +223,14 @@ class Store:
     def list_books(self, search="", genre="", availability=""):
         where, args = [], []
         if search:
-            like = f"%{search}%"
-            where.append("(b.title LIKE ? OR b.author LIKE ? OR b.isbn LIKE ? OR b.tags LIKE ? OR b.publisher LIKE ?)")
+            like = f"%{search.lower()}%"
+            where.append("(LOWER(b.title) LIKE ? OR LOWER(b.author) LIKE ? OR LOWER(b.isbn) LIKE ?"
+                         " OR LOWER(b.tags) LIKE ? OR LOWER(b.publisher) LIKE ?)")
             args += [like] * 5
         if genre:
             where.append("b.genre = ?")
             args.append(genre)
-        sql = BOOK_SELECT + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY b.title COLLATE NOCASE"
+        sql = BOOK_SELECT + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY LOWER(b.title)"
         rows = self.q(sql, args)
         if availability == "available":
             rows = [r for r in rows if r["available"] > 0]
@@ -166,18 +242,15 @@ class Store:
         b = self.one(BOOK_SELECT + " WHERE b.id = ?", (bid,))
         if not b:
             raise ApiError(404, "Book not found")
-        b["loans"] = self.q(LOAN_SELECT + " WHERE l.book_id = ? ORDER BY l.loaned_on DESC, l.id DESC", (bid,))
+        b["loans"] = self.loans_where("l.book_id = ?", (bid,))
         return b
 
     def create_book(self, data):
         d = self.clean_book(data)
-        cols = list(d)
-        cur = self.conn.execute(
-            f"INSERT INTO books ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})", [d[c] for c in cols]
-        )
+        bid = self.insert("books", d)
         self.log("book", f"Added book “{d['title']}”")
         self.conn.commit()
-        return self.get_book(cur.lastrowid)
+        return self.get_book(bid)
 
     def update_book(self, bid, data):
         current = self.get_book(bid)
@@ -188,9 +261,8 @@ class Store:
                 raise ApiError(400, f"{on_loan} copies are on loan; copies cannot be lower than that")
         if d:
             sets = ", ".join(f"{c} = ?" for c in d)
-            self.conn.execute(
-                f"UPDATE books SET {sets}, updated_at = datetime('now') WHERE id = ?", [*d.values(), bid]
-            )
+            now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            self.exec(f"UPDATE books SET {sets}, updated_at = ? WHERE id = ?", [*d.values(), now, bid])
             self.log("book", f"Updated book “{d.get('title', current['title'])}”")
             self.conn.commit()
         return self.get_book(bid)
@@ -199,7 +271,7 @@ class Store:
         b = self.get_book(bid)
         if b["copies"] - b["available"] > 0:
             raise ApiError(409, "Book has copies on loan; return them first")
-        self.conn.execute("DELETE FROM books WHERE id = ?", (bid,))
+        self.exec("DELETE FROM books WHERE id = ?", (bid,))
         self.log("book", f"Deleted book “{b['title']}”")
         self.conn.commit()
 
@@ -217,36 +289,34 @@ class Store:
 
     def list_members(self, search=""):
         if search:
-            like = f"%{search}%"
+            like = f"%{search.lower()}%"
             return self.q(
-                MEMBER_SELECT + " WHERE m.name LIKE ? OR m.email LIKE ? OR m.phone LIKE ? ORDER BY m.name COLLATE NOCASE",
+                MEMBER_SELECT + " WHERE LOWER(m.name) LIKE ? OR LOWER(m.email) LIKE ? OR m.phone LIKE ?"
+                " ORDER BY LOWER(m.name)",
                 (like, like, like),
             )
-        return self.q(MEMBER_SELECT + " ORDER BY m.name COLLATE NOCASE")
+        return self.q(MEMBER_SELECT + " ORDER BY LOWER(m.name)")
 
     def get_member(self, mid):
         m = self.one(MEMBER_SELECT + " WHERE m.id = ?", (mid,))
         if not m:
             raise ApiError(404, "Member not found")
-        m["loans"] = self.q(LOAN_SELECT + " WHERE l.member_id = ? ORDER BY l.loaned_on DESC, l.id DESC", (mid,))
+        m["loans"] = self.loans_where("l.member_id = ?", (mid,))
         return m
 
     def create_member(self, data):
         d = self.clean_member(data)
-        cols = list(d)
-        cur = self.conn.execute(
-            f"INSERT INTO members ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})", [d[c] for c in cols]
-        )
+        mid = self.insert("members", d)
         self.log("member", f"Added member {d['name']}")
         self.conn.commit()
-        return self.get_member(cur.lastrowid)
+        return self.get_member(mid)
 
     def update_member(self, mid, data):
         current = self.get_member(mid)
         d = self.clean_member(data, partial=True)
         if d:
             sets = ", ".join(f"{c} = ?" for c in d)
-            self.conn.execute(f"UPDATE members SET {sets} WHERE id = ?", [*d.values(), mid])
+            self.exec(f"UPDATE members SET {sets} WHERE id = ?", [*d.values(), mid])
             self.log("member", f"Updated member {d.get('name', current['name'])}")
             self.conn.commit()
         return self.get_member(mid)
@@ -255,13 +325,13 @@ class Store:
         m = self.get_member(mid)
         if m["active_loans"]:
             raise ApiError(409, "Member still has books on loan")
-        self.conn.execute("DELETE FROM members WHERE id = ?", (mid,))
+        self.exec("DELETE FROM members WHERE id = ?", (mid,))
         self.log("member", f"Deleted member {m['name']}")
         self.conn.commit()
 
     # -- loans -------------------------------------------------------------
     def list_loans(self, status=""):
-        rows = self.q(LOAN_SELECT + " ORDER BY l.returned_on IS NOT NULL, l.due_on, l.id DESC")
+        rows = self.loans_where(order="CASE WHEN l.returned_on IS NULL THEN 0 ELSE 1 END, l.due_on, l.id DESC")
         if status == "open":
             return [r for r in rows if r["status"] != "returned"]
         if status:
@@ -281,49 +351,54 @@ class Store:
         due = parse_date(data.get("due_on")) or loaned + timedelta(days=14)
         if due < loaned:
             raise ApiError(400, "Due date must be on or after the loan date")
-        cur = self.conn.execute(
-            "INSERT INTO loans (book_id, member_id, loaned_on, due_on, notes) VALUES (?, ?, ?, ?, ?)",
-            (bid, mid, loaned.isoformat(), due.isoformat(), str(data.get("notes") or "").strip()),
-        )
+        lid = self.insert("loans", {
+            "book_id": bid, "member_id": mid, "loaned_on": loaned.isoformat(), "due_on": due.isoformat(),
+            "notes": str(data.get("notes") or "").strip(),
+        })
         self.log("loan", f"Lent “{book['title']}” to {member['name']} (due {due.isoformat()})")
         self.conn.commit()
-        return self.one(LOAN_SELECT + " WHERE l.id = ?", (cur.lastrowid,))
+        return self.get_loan(lid)
 
     def return_loan(self, lid):
-        loan = self.one(LOAN_SELECT + " WHERE l.id = ?", (lid,))
+        loan = self.get_loan(lid)
         if not loan:
             raise ApiError(404, "Loan not found")
         if loan["returned_on"]:
             raise ApiError(409, "Loan already returned")
-        self.conn.execute("UPDATE loans SET returned_on = ? WHERE id = ?", (date.today().isoformat(), lid))
+        self.exec("UPDATE loans SET returned_on = ? WHERE id = ?", (today(), lid))
         self.log("loan", f"{loan['member_name']} returned “{loan['book_title']}”")
         self.conn.commit()
-        return self.one(LOAN_SELECT + " WHERE l.id = ?", (lid,))
+        return self.get_loan(lid)
 
     def extend_loan(self, lid, data):
-        loan = self.one(LOAN_SELECT + " WHERE l.id = ?", (lid,))
+        loan = self.get_loan(lid)
         if not loan:
             raise ApiError(404, "Loan not found")
         if loan["returned_on"]:
             raise ApiError(409, "Loan already returned")
         due = parse_date(data.get("due_on"))
         if not due:
-            due = max(date.fromisoformat(loan["due_on"]), date.today()) + timedelta(days=int(data.get("days") or 7))
+            try:
+                days = int(data.get("days") or 7)
+            except (TypeError, ValueError):
+                raise ApiError(400, "'days' must be a whole number")
+            due = max(date.fromisoformat(loan["due_on"]), date.today()) + timedelta(days=days)
         if due < date.fromisoformat(loan["loaned_on"]):
             raise ApiError(400, "Due date must be on or after the loan date")
-        self.conn.execute("UPDATE loans SET due_on = ? WHERE id = ?", (due.isoformat(), lid))
+        self.exec("UPDATE loans SET due_on = ? WHERE id = ?", (due.isoformat(), lid))
         self.log("loan", f"Extended “{loan['book_title']}” for {loan['member_name']} to {due.isoformat()}")
         self.conn.commit()
-        return self.one(LOAN_SELECT + " WHERE l.id = ?", (lid,))
+        return self.get_loan(lid)
 
     # -- dashboard ---------------------------------------------------------
     def stats(self):
         s = self.one(
             """SELECT (SELECT COUNT(*) FROM books) AS titles,
-                      (SELECT COALESCE(SUM(copies),0) FROM books) AS copies,
+                      (SELECT CAST(COALESCE(SUM(copies),0) AS INTEGER) FROM books) AS copies,
                       (SELECT COUNT(*) FROM members) AS members,
                       (SELECT COUNT(*) FROM loans WHERE returned_on IS NULL) AS on_loan,
-                      (SELECT COUNT(*) FROM loans WHERE returned_on IS NULL AND due_on < date('now','localtime')) AS overdue"""
+                      (SELECT COUNT(*) FROM loans WHERE returned_on IS NULL AND due_on < ?) AS overdue""",
+            (today(),),
         )
         s["by_genre"] = self.q(
             "SELECT COALESCE(NULLIF(genre,''),'Uncategorised') AS genre, COUNT(*) AS n FROM books GROUP BY 1 ORDER BY n DESC LIMIT 8"
@@ -352,10 +427,7 @@ class Store:
             row = {k.strip().lower(): v for k, v in row.items() if k}
             try:
                 d = self.clean_book({k: row[k] for k in BOOK_FIELDS if k in row})
-                cols = list(d)
-                self.conn.execute(
-                    f"INSERT INTO books ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})", [d[c] for c in cols]
-                )
+                self.insert("books", d)
                 added += 1
             except ApiError as e:
                 errors.append(f"Row {i}: {e.message}")
@@ -417,51 +489,50 @@ class Handler(BaseHTTPRequestHandler):
         rid = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
         sub = parts[2] if len(parts) > 2 else None
 
-        with DB_LOCK:
-            if res == "stats" and method == "GET":
-                return s.stats()
-            if res == "genres" and method == "GET":
-                return s.genres()
-            if res == "export" and method == "GET":
-                return ("csv", s.books_csv())
-            if res == "import" and method == "POST":
-                text = self.body()
-                if not isinstance(text, str):
-                    raise ApiError(400, "Send CSV with Content-Type: text/csv")
-                return s.import_books_csv(text)
-            if res == "books":
-                if rid is None and method == "GET":
-                    return s.list_books(qs.get("q", ""), qs.get("genre", ""), qs.get("availability", ""))
-                if rid is None and method == "POST":
-                    return (201, s.create_book(self.body()))
-                if rid and method == "GET":
-                    return s.get_book(rid)
-                if rid and method == "PUT":
-                    return s.update_book(rid, self.body())
-                if rid and method == "DELETE":
-                    s.delete_book(rid)
-                    return {"ok": True}
-            if res == "members":
-                if rid is None and method == "GET":
-                    return s.list_members(qs.get("q", ""))
-                if rid is None and method == "POST":
-                    return (201, s.create_member(self.body()))
-                if rid and method == "GET":
-                    return s.get_member(rid)
-                if rid and method == "PUT":
-                    return s.update_member(rid, self.body())
-                if rid and method == "DELETE":
-                    s.delete_member(rid)
-                    return {"ok": True}
-            if res == "loans":
-                if rid is None and method == "GET":
-                    return s.list_loans(qs.get("status", ""))
-                if rid is None and method == "POST":
-                    return (201, s.create_loan(self.body()))
-                if rid and sub == "return" and method == "POST":
-                    return s.return_loan(rid)
-                if rid and sub == "extend" and method == "POST":
-                    return s.extend_loan(rid, self.body())
+        if res == "stats" and method == "GET":
+            return s.stats()
+        if res == "genres" and method == "GET":
+            return s.genres()
+        if res == "export" and method == "GET":
+            return ("csv", s.books_csv())
+        if res == "import" and method == "POST":
+            text = self.body()
+            if not isinstance(text, str):
+                raise ApiError(400, "Send CSV with Content-Type: text/csv")
+            return s.import_books_csv(text)
+        if res == "books":
+            if rid is None and method == "GET":
+                return s.list_books(qs.get("q", ""), qs.get("genre", ""), qs.get("availability", ""))
+            if rid is None and method == "POST":
+                return (201, s.create_book(self.body()))
+            if rid and method == "GET":
+                return s.get_book(rid)
+            if rid and method == "PUT":
+                return s.update_book(rid, self.body())
+            if rid and method == "DELETE":
+                s.delete_book(rid)
+                return {"ok": True}
+        if res == "members":
+            if rid is None and method == "GET":
+                return s.list_members(qs.get("q", ""))
+            if rid is None and method == "POST":
+                return (201, s.create_member(self.body()))
+            if rid and method == "GET":
+                return s.get_member(rid)
+            if rid and method == "PUT":
+                return s.update_member(rid, self.body())
+            if rid and method == "DELETE":
+                s.delete_member(rid)
+                return {"ok": True}
+        if res == "loans":
+            if rid is None and method == "GET":
+                return s.list_loans(qs.get("status", ""))
+            if rid is None and method == "POST":
+                return (201, s.create_loan(self.body()))
+            if rid and sub == "return" and method == "POST":
+                return s.return_loan(rid)
+            if rid and sub == "extend" and method == "POST":
+                return s.extend_loan(rid, self.body())
         raise ApiError(404, "Not found")
 
     def static(self, path):
@@ -473,9 +544,36 @@ class Handler(BaseHTTPRequestHandler):
         )
         return ("raw", target.read_bytes(), ctype + "; charset=utf-8")
 
-    def handle_method(self, method):
+    def authorized(self):
+        user, pw = os.environ.get("BASIC_AUTH_USER"), os.environ.get("BASIC_AUTH_PASSWORD")
+        if not (user and pw):
+            return True
+        header = self.headers.get("Authorization", "")
+        if not header.startswith("Basic "):
+            return False
         try:
-            result = self.route(method)
+            given_user, _, given_pw = base64.b64decode(header[6:]).decode().partition(":")
+        except Exception:
+            return False
+        return hmac.compare_digest(given_user.encode(), user.encode()) & hmac.compare_digest(
+            given_pw.encode(), pw.encode()
+        )
+
+    def handle_method(self, method):
+        # Heroku terminates TLS and forwards the original scheme; force HTTPS so the password isn't sent in clear.
+        if self.headers.get("X-Forwarded-Proto") == "http":
+            self.send(301, b"", "text/plain", {"Location": f"https://{self.headers.get('Host', '')}{self.path}"})
+            return
+        if not self.authorized():
+            self.send(401, {"error": "Authentication required"},
+                      headers={"WWW-Authenticate": 'Basic realm="Book CRM", charset="UTF-8"'})
+            return
+        try:
+            with DB_LOCK:
+                try:
+                    result = self.route(method)
+                finally:
+                    self.store.rollback()  # no-op after a commit; ends read transactions and clears failed ones
             if isinstance(result, tuple) and result[0] == "raw":
                 self.send(200, result[1], result[2])
             elif isinstance(result, tuple) and result[0] == "csv":
@@ -487,8 +585,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(200, result)
         except ApiError as e:
             self.send(e.status, {"error": e.message})
-        except sqlite3.Error as e:
-            self.send(500, {"error": f"Database error: {e}"})
+        except Exception as e:  # database or unexpected error
+            print(f"ERROR {method} {self.path}: {e!r}", file=sys.stderr)
+            self.send(500, {"error": "Server error — please try again"})
 
     def do_GET(self):
         self.handle_method("GET")
@@ -505,13 +604,24 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     ap = argparse.ArgumentParser(description="Book Repository CRM")
-    ap.add_argument("--port", type=int, default=8000)
-    ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--db", default=str(ROOT / "books.db"))
+    on_heroku = "DYNO" in os.environ
+    ap.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8000)))
+    ap.add_argument("--host", default="0.0.0.0" if on_heroku else "127.0.0.1")
+    ap.add_argument("--db", default=str(ROOT / "books.db"), help="SQLite file (ignored when DATABASE_URL is set)")
     args = ap.parse_args()
-    Handler.store = Store(args.db)
+
+    has_auth = bool(os.environ.get("BASIC_AUTH_USER") and os.environ.get("BASIC_AUTH_PASSWORD"))
+    if on_heroku and not has_auth:
+        sys.exit("Refusing to start: set BASIC_AUTH_USER and BASIC_AUTH_PASSWORD config vars first.")
+    if on_heroku and not os.environ.get("DATABASE_URL"):
+        sys.exit("Refusing to start: no DATABASE_URL. Add Heroku Postgres — SQLite data is lost on every restart.")
+
+    database_url = os.environ.get("DATABASE_URL")
+    Handler.store = Store(path=args.db, database_url=database_url)
     srv = ThreadingHTTPServer((args.host, args.port), Handler)
-    print(f"Book CRM running at http://{args.host}:{args.port}  (db: {args.db})")
+    where = "Postgres (DATABASE_URL)" if database_url else args.db
+    print(f"Book CRM running at http://{args.host}:{args.port}  (db: {where}, password: {'on' if has_auth else 'off'})",
+          flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

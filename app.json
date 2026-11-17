@@ -1,0 +1,11 @@
+{
+  "name": "Book Repository CRM",
+  "description": "Manage a book collection, members and loans.",
+  "repository": "https://github.com/shanbit200/book-crm",
+  "stack": "heroku-24",
+  "addons": [{ "plan": "heroku-postgresql:essential-0" }],
+  "env": {
+    "BASIC_AUTH_USER": { "description": "Username to sign in to the CRM", "value": "admin" },
+    "BASIC_AUTH_PASSWORD": { "description": "Password to sign in to the CRM", "generator": "secret" }
+  }
+}

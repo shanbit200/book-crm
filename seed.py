@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Load sample books, members and loans: python3 seed.py [--db books.db]"""
 import argparse
+import os
 from datetime import date, timedelta
 from server import ROOT, Store
 
@@ -16,7 +17,7 @@ MEMBERS = [("Asha Rao", "asha@example.com", "+91 98000 11111"), ("Daniel Kim", "
            ("Meera Iyer", "meera@example.com", "")]
 
 ap = argparse.ArgumentParser(); ap.add_argument("--db", default=str(ROOT / "books.db")); a = ap.parse_args()
-s = Store(a.db)
+s = Store(path=a.db, database_url=os.environ.get("DATABASE_URL"))
 keys = ["title", "author", "isbn", "genre", "publisher", "year", "copies", "location", "tags"]
 b = [s.create_book(dict(zip(keys, row)))["id"] for row in BOOKS]
 m = [s.create_member({"name": n, "email": e, "phone": p})["id"] for n, e, p in MEMBERS]
@@ -24,4 +25,4 @@ t = date.today()
 s.create_loan({"book_id": b[0], "member_id": m[0], "loaned_on": t - timedelta(20), "due_on": t - timedelta(6)})
 s.create_loan({"book_id": b[2], "member_id": m[1], "loaned_on": t - timedelta(12), "due_on": t + timedelta(2)})
 s.create_loan({"book_id": b[1], "member_id": m[2]})
-print(f"Seeded {len(b)} books, {len(m)} members, 3 loans into {a.db}")
+print(f"Seeded {len(b)} books, {len(m)} members, 3 loans into {'Postgres' if s.url else a.db}")

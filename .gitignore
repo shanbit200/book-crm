@@ -1,0 +1,6 @@
+# Local database (your data)
+books.db
+*.db-journal
+__pycache__/
+*.pyc
+.DS_Store

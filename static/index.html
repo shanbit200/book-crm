@@ -1,0 +1,426 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Book Repository CRM</title>
+<style>
+:root {
+  --bg: #f6f5f2; --panel: #ffffff; --ink: #1d1d1b; --muted: #6b6a66; --line: #e4e2dc;
+  --accent: #2f5d50; --accent-ink: #fff; --accent-soft: #e3eeea;
+  --warn: #a15c07; --warn-soft: #fbf0df; --bad: #b3261e; --bad-soft: #fbe7e5; --ok: #2e7d32; --ok-soft: #e6f3e7;
+  --radius: 10px; --shadow: 0 1px 2px rgba(0,0,0,.05), 0 4px 16px rgba(0,0,0,.04);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161716; --panel: #1f201f; --ink: #ecebe7; --muted: #9c9b96; --line: #2f302e;
+    --accent: #7fbfa9; --accent-ink: #10201b; --accent-soft: #233630;
+    --warn: #e5a54b; --warn-soft: #3a2d18; --bad: #f2867c; --bad-soft: #3b1f1d; --ok: #81c784; --ok-soft: #1f3321;
+    --shadow: none;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif; background: var(--bg); color: var(--ink); }
+header { display: flex; align-items: center; gap: 24px; padding: 14px 24px; background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5; flex-wrap: wrap; }
+header h1 { font-size: 16px; margin: 0; letter-spacing: .2px; }
+header h1 span { color: var(--accent); }
+nav { display: flex; gap: 4px; flex-wrap: wrap; }
+nav button { background: none; border: 0; padding: 7px 12px; border-radius: 8px; color: var(--muted); font: inherit; cursor: pointer; }
+nav button.active { background: var(--accent-soft); color: var(--ink); font-weight: 600; }
+nav button:hover { color: var(--ink); }
+main { max-width: 1200px; margin: 0 auto; padding: 24px; }
+h2 { font-size: 20px; margin: 0 0 16px; }
+h3 { font-size: 14px; margin: 0 0 10px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .4px; }
+.toolbar { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; align-items: center; }
+.toolbar .spacer { flex: 1; }
+input, select, textarea { font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; width: 100%; }
+.toolbar input, .toolbar select { width: auto; min-width: 160px; }
+.toolbar input[type=search] { min-width: 260px; }
+input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+button.btn { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--ink); padding: 8px 14px; border-radius: 8px; cursor: pointer; white-space: nowrap; }
+button.btn:hover { border-color: var(--muted); }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+button.danger { color: var(--bad); }
+button.sm { padding: 4px 10px; font-size: 13px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: 16px; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 20px; }
+.stat .n { font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.stat .l { color: var(--muted); font-size: 13px; }
+.stat.bad .n { color: var(--bad); }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; }
+table { width: 100%; border-collapse: collapse; }
+.table-wrap { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
+th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+th { font-size: 12px; text-transform: uppercase; letter-spacing: .4px; color: var(--muted); font-weight: 600; background: var(--panel); }
+tbody tr:last-child td { border-bottom: 0; }
+tbody tr.click { cursor: pointer; }
+tbody tr.click:hover { background: var(--accent-soft); }
+td.num { font-variant-numeric: tabular-nums; }
+td.actions { text-align: right; white-space: nowrap; }
+.sub { color: var(--muted); font-size: 12px; }
+.pill { display: inline-block; padding: 2px 8px; border-radius: 99px; font-size: 12px; font-weight: 600; }
+.pill.ok { background: var(--ok-soft); color: var(--ok); }
+.pill.warn { background: var(--warn-soft); color: var(--warn); }
+.pill.bad { background: var(--bad-soft); color: var(--bad); }
+.pill.mute { background: var(--line); color: var(--muted); }
+.tag { display: inline-block; background: var(--accent-soft); padding: 1px 7px; border-radius: 6px; font-size: 12px; margin: 1px 2px 1px 0; }
+.empty { padding: 32px; text-align: center; color: var(--muted); }
+.bar { display: grid; grid-template-columns: 130px 1fr 32px; gap: 8px; align-items: center; margin: 6px 0; font-size: 13px; }
+.bar .track { background: var(--line); border-radius: 4px; height: 10px; overflow: hidden; }
+.bar .fill { background: var(--accent); height: 100%; }
+.feed li { padding: 6px 0; border-bottom: 1px solid var(--line); list-style: none; }
+.feed { padding: 0; margin: 0; }
+.feed li:last-child { border: 0; }
+dialog { border: 1px solid var(--line); border-radius: 14px; padding: 0; width: min(640px, calc(100vw - 32px)); background: var(--panel); color: var(--ink); box-shadow: 0 20px 60px rgba(0,0,0,.25); }
+dialog::backdrop { background: rgba(0,0,0,.35); }
+dialog form, dialog .body { padding: 20px; }
+dialog h2 { margin-bottom: 14px; }
+.fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.fields .full { grid-column: 1 / -1; }
+label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; font-weight: 600; }
+.dialog-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
+.dialog-actions .left { margin-right: auto; }
+.err { color: var(--bad); margin-top: 10px; min-height: 1em; }
+.kv { display: grid; grid-template-columns: 110px 1fr; gap: 4px 12px; margin-bottom: 16px; }
+.kv dt { color: var(--muted); } .kv dd { margin: 0; }
+#toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 10px 16px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 50; }
+#toast.show { opacity: 1; }
+@media (max-width: 640px) {
+  main { padding: 16px; } header { padding: 12px 16px; gap: 10px; }
+  .fields { grid-template-columns: 1fr; }
+  .toolbar input[type=search], .toolbar select, .toolbar input { min-width: 0; width: 100%; }
+  .hide-sm { display: none; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>📚 Book<span>CRM</span></h1>
+  <nav id="nav">
+    <button data-view="dashboard" class="active">Dashboard</button>
+    <button data-view="books">Books</button>
+    <button data-view="members">Members</button>
+    <button data-view="loans">Loans</button>
+  </nav>
+</header>
+<main id="main"></main>
+
+<dialog id="dlg"></dialog>
+<div id="toast"></div>
+<input type="file" id="csvFile" accept=".csv,text/csv" hidden>
+
+<script>
+const $ = (s, el = document) => el.querySelector(s);
+const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const main = $('#main'), dlg = $('#dlg');
+let view = 'dashboard';
+const state = { bookQ: '', genre: '', avail: '', memberQ: '', loanStatus: 'open' };
+
+async function api(path, opts = {}) {
+  const res = await fetch('/api' + path, {
+    method: opts.method || 'GET',
+    headers: opts.csv ? { 'Content-Type': 'text/csv' } : { 'Content-Type': 'application/json' },
+    body: opts.csv ?? (opts.body ? JSON.stringify(opts.body) : undefined),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+  return data;
+}
+function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), 2400); }
+const fmtDate = d => d ? new Date(d + 'T00:00:00').toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) : '—';
+const statusPill = s => `<span class="pill ${{active:'ok',overdue:'bad',returned:'mute'}[s]}">${s}</span>`;
+const availPill = b => b.available > 0 ? `<span class="pill ok">${b.available} / ${b.copies} in</span>` : `<span class="pill warn">all out</span>`;
+const tags = t => (t || '').split(',').map(s => s.trim()).filter(Boolean).map(s => `<span class="tag">${esc(s)}</span>`).join('');
+const daysFrom = d => Math.round((new Date(d + 'T00:00:00') - new Date(new Date().toDateString())) / 864e5);
+const dueText = l => { if (l.returned_on) return 'Returned ' + fmtDate(l.returned_on); const n = daysFrom(l.due_on); return n < 0 ? `${-n} day${n === -1 ? '' : 's'} overdue` : n === 0 ? 'Due today' : `Due in ${n} day${n === 1 ? '' : 's'}`; };
+const debounce = (fn, ms = 250) => { let h; return (...a) => { clearTimeout(h); h = setTimeout(() => fn(...a), ms); }; };
+
+// ---------- Navigation ----------
+$('#nav').addEventListener('click', e => { const b = e.target.closest('button'); if (b) go(b.dataset.view); });
+function go(v) { view = v; document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('active', b.dataset.view === v)); location.hash = v; render(); }
+async function render() {
+  try { await ({ dashboard, books, members, loans })[view](); }
+  catch (e) { main.innerHTML = `<div class="card err">${esc(e.message)}</div>`; }
+}
+
+// ---------- Dashboard ----------
+async function dashboard() {
+  const s = await api('/stats');
+  const max = Math.max(1, ...s.by_genre.map(g => g.n));
+  const loanRows = list => list.length ? `<table><tbody>${list.map(l => `
+      <tr><td><b>${esc(l.book_title)}</b><div class="sub">${esc(l.member_name)}</div></td>
+      <td>${statusPill(l.status)}<div class="sub">${dueText(l)}</div></td>
+      <td class="actions"><button class="btn sm" data-return="${l.id}">Return</button></td></tr>`).join('')}</tbody></table>` : '<div class="empty">Nothing here 🎉</div>';
+  main.innerHTML = `
+    <h2>Dashboard</h2>
+    <div class="stats">
+      <div class="card stat"><div class="n">${s.titles}</div><div class="l">Titles</div></div>
+      <div class="card stat"><div class="n">${s.copies}</div><div class="l">Total copies</div></div>
+      <div class="card stat"><div class="n">${s.members}</div><div class="l">Members</div></div>
+      <div class="card stat"><div class="n">${s.on_loan}</div><div class="l">On loan</div></div>
+      <div class="card stat ${s.overdue ? 'bad' : ''}"><div class="n">${s.overdue}</div><div class="l">Overdue</div></div>
+    </div>
+    <div class="toolbar">
+      <button class="btn primary" id="qLoan">+ New loan</button>
+      <button class="btn" id="qBook">+ Add book</button>
+      <button class="btn" id="qMember">+ Add member</button>
+    </div>
+    <div class="grid2">
+      <div class="card"><h3>Overdue</h3>${loanRows(s.overdue_loans)}</div>
+      <div class="card"><h3>Due in the next 3 days</h3>${loanRows(s.due_soon)}</div>
+      <div class="card"><h3>Collection by genre</h3>${s.by_genre.length ? s.by_genre.map(g => `
+        <div class="bar"><span>${esc(g.genre)}</span><div class="track"><div class="fill" style="width:${g.n / max * 100}%"></div></div><span class="num">${g.n}</span></div>`).join('') : '<div class="empty">No books yet</div>'}</div>
+      <div class="card"><h3>Recent activity</h3>${s.activity.length ? `<ul class="feed">${s.activity.map(a => `
+        <li>${esc(a.message)}<div class="sub">${new Date(a.at.replace(' ', 'T') + 'Z').toLocaleString()}</div></li>`).join('')}</ul>` : '<div class="empty">No activity yet</div>'}</div>
+    </div>`;
+  $('#qLoan').onclick = () => loanForm();
+  $('#qBook').onclick = () => bookForm();
+  $('#qMember').onclick = () => memberForm();
+  bindReturns();
+}
+function bindReturns() {
+  main.querySelectorAll('[data-return]').forEach(b => b.onclick = async e => {
+    e.stopPropagation();
+    try { await api(`/loans/${b.dataset.return}/return`, { method: 'POST' }); toast('Marked as returned'); render(); } catch (err) { toast(err.message); }
+  });
+  main.querySelectorAll('[data-extend]').forEach(b => b.onclick = async e => {
+    e.stopPropagation();
+    try { const l = await api(`/loans/${b.dataset.extend}/extend`, { method: 'POST', body: { days: 7 } }); toast('Due date moved to ' + fmtDate(l.due_on)); render(); } catch (err) { toast(err.message); }
+  });
+}
+
+// ---------- Books ----------
+async function books() {
+  if (!$('#bookTable')) {
+    main.innerHTML = `
+      <h2>Books</h2>
+      <div class="toolbar">
+        <input type="search" id="bq" placeholder="Search title, author, ISBN, tags…" value="${esc(state.bookQ)}">
+        <select id="bg"><option value="">All genres</option></select>
+        <select id="ba"><option value="">Any availability</option><option value="available">Available</option><option value="out">All copies out</option></select>
+        <span class="spacer"></span>
+        <button class="btn" id="imp">Import CSV</button>
+        <a href="/api/export" download><button class="btn">Export CSV</button></a>
+        <button class="btn primary" id="addBook">+ Add book</button>
+      </div>
+      <div class="table-wrap" id="bookTable"></div>`;
+    $('#bq').oninput = debounce(e => { state.bookQ = e.target.value; books(); });
+    $('#bg').onchange = e => { state.genre = e.target.value; books(); };
+    $('#ba').onchange = e => { state.avail = e.target.value; books(); };
+    $('#ba').value = state.avail;
+    $('#addBook').onclick = () => bookForm();
+    $('#imp').onclick = () => $('#csvFile').click();
+  }
+  const [rows, genres] = await Promise.all([
+    api(`/books?q=${encodeURIComponent(state.bookQ)}&genre=${encodeURIComponent(state.genre)}&availability=${state.avail}`),
+    api('/genres'),
+  ]);
+  $('#bg').innerHTML = `<option value="">All genres</option>` + genres.map(g => `<option ${g === state.genre ? 'selected' : ''}>${esc(g)}</option>`).join('');
+  $('#bookTable').innerHTML = rows.length ? `<table>
+    <thead><tr><th>Title</th><th class="hide-sm">Genre</th><th class="hide-sm">ISBN</th><th class="hide-sm">Shelf</th><th>Availability</th></tr></thead>
+    <tbody>${rows.map(b => `<tr class="click" data-id="${b.id}">
+      <td><b>${esc(b.title)}</b><div class="sub">${esc(b.author) || 'Unknown author'}${b.year ? ' · ' + b.year : ''}</div>${tags(b.tags)}</td>
+      <td class="hide-sm">${esc(b.genre) || '—'}</td><td class="hide-sm sub">${esc(b.isbn) || '—'}</td><td class="hide-sm">${esc(b.location) || '—'}</td>
+      <td>${availPill(b)}</td></tr>`).join('')}</tbody></table>`
+    : `<div class="empty">${state.bookQ || state.genre || state.avail ? 'No books match these filters.' : 'No books yet — add your first one or import a CSV.'}</div>`;
+  $('#bookTable').querySelectorAll('tr[data-id]').forEach(tr => tr.onclick = () => bookDetail(+tr.dataset.id));
+}
+
+$('#csvFile').onchange = async e => {
+  const f = e.target.files[0]; e.target.value = '';
+  if (!f) return;
+  try {
+    const r = await api('/import', { method: 'POST', csv: await f.text() });
+    toast(`Imported ${r.added} book${r.added === 1 ? '' : 's'}${r.errors.length ? `, ${r.errors.length} skipped` : ''}`);
+    if (r.errors.length) alert('Skipped rows:\n' + r.errors.join('\n'));
+    render();
+  } catch (err) { toast(err.message); }
+};
+
+function openDialog(html, onSubmit) {
+  dlg.innerHTML = html;
+  const form = dlg.querySelector('form');
+  if (form) form.onsubmit = async e => {
+    e.preventDefault();
+    const btn = form.querySelector('[type=submit]'); btn.disabled = true;
+    try { await onSubmit(Object.fromEntries(new FormData(form))); dlg.close(); render(); }
+    catch (err) { form.querySelector('.err').textContent = err.message; }
+    finally { btn.disabled = false; }
+  };
+  dlg.querySelectorAll('[data-close]').forEach(b => b.onclick = () => dlg.close());
+  dlg.showModal();
+}
+
+function bookForm(b = {}) {
+  const f = (name, label, type = 'text', extra = '') => `<div class="${extra}"><label for="f-${name}">${label}</label><input id="f-${name}" name="${name}" type="${type}" value="${esc(b[name] ?? (name === 'copies' ? 1 : ''))}" ${name === 'title' ? 'required' : ''} ${type === 'number' ? 'min="0"' : ''}></div>`;
+  openDialog(`<form>
+    <h2>${b.id ? 'Edit book' : 'Add book'}</h2>
+    <div class="fields">
+      ${f('title', 'Title *', 'text', 'full')}${f('author', 'Author')}${f('isbn', 'ISBN')}
+      ${f('genre', 'Genre')}${f('publisher', 'Publisher')}${f('year', 'Year', 'number')}${f('copies', 'Copies', 'number')}
+      ${f('location', 'Shelf / location')}${f('tags', 'Tags (comma-separated)')}
+      <div class="full"><label for="f-notes">Notes</label><textarea id="f-notes" name="notes" rows="3">${esc(b.notes)}</textarea></div>
+    </div>
+    <div class="err"></div>
+    <div class="dialog-actions">
+      ${b.id ? '<button type="button" class="btn danger left" id="delBook">Delete</button>' : ''}
+      <button type="button" class="btn" data-close>Cancel</button><button type="submit" class="btn primary">Save</button>
+    </div></form>`,
+    async data => { await api(b.id ? `/books/${b.id}` : '/books', { method: b.id ? 'PUT' : 'POST', body: data }); toast(b.id ? 'Book updated' : 'Book added'); });
+  if (b.id) $('#delBook').onclick = async () => {
+    if (!confirm(`Delete “${b.title}”? Its loan history will also be removed.`)) return;
+    try { await api(`/books/${b.id}`, { method: 'DELETE' }); dlg.close(); toast('Book deleted'); render(); } catch (err) { dlg.querySelector('.err').textContent = err.message; }
+  };
+}
+
+async function bookDetail(id) {
+  const b = await api(`/books/${id}`);
+  openDialog(`<div class="body">
+    <h2>${esc(b.title)}</h2>
+    <dl class="kv">
+      <dt>Author</dt><dd>${esc(b.author) || '—'}</dd>
+      <dt>ISBN</dt><dd>${esc(b.isbn) || '—'}</dd>
+      <dt>Genre</dt><dd>${esc(b.genre) || '—'}</dd>
+      <dt>Publisher</dt><dd>${esc(b.publisher) || '—'}${b.year ? ` (${b.year})` : ''}</dd>
+      <dt>Shelf</dt><dd>${esc(b.location) || '—'}</dd>
+      <dt>Availability</dt><dd>${availPill(b)}</dd>
+      ${b.tags ? `<dt>Tags</dt><dd>${tags(b.tags)}</dd>` : ''}
+      ${b.notes ? `<dt>Notes</dt><dd>${esc(b.notes)}</dd>` : ''}
+    </dl>
+    <h3>Loan history (${b.loans.length})</h3>
+    ${b.loans.length ? `<table><tbody>${b.loans.map(l => `<tr><td>${esc(l.member_name)}<div class="sub">${fmtDate(l.loaned_on)} → ${fmtDate(l.due_on)}</div></td><td>${statusPill(l.status)}</td></tr>`).join('')}</tbody></table>` : '<div class="sub">Never lent out.</div>'}
+    <div class="dialog-actions">
+      <button class="btn" id="edit">Edit</button>
+      <button class="btn primary" id="lend" ${b.available > 0 ? '' : 'disabled'}>Lend this book</button>
+      <button class="btn" data-close>Close</button>
+    </div></div>`);
+  $('#edit').onclick = () => bookForm(b);
+  $('#lend').onclick = () => loanForm({ book_id: b.id });
+}
+
+// ---------- Members ----------
+async function members() {
+  if (!$('#memberTable')) {
+    main.innerHTML = `
+      <h2>Members</h2>
+      <div class="toolbar">
+        <input type="search" id="mq" placeholder="Search name, email, phone…" value="${esc(state.memberQ)}">
+        <span class="spacer"></span>
+        <button class="btn primary" id="addMember">+ Add member</button>
+      </div>
+      <div class="table-wrap" id="memberTable"></div>`;
+    $('#mq').oninput = debounce(e => { state.memberQ = e.target.value; members(); });
+    $('#addMember').onclick = () => memberForm();
+  }
+  const rows = await api(`/members?q=${encodeURIComponent(state.memberQ)}`);
+  $('#memberTable').innerHTML = rows.length ? `<table>
+    <thead><tr><th>Name</th><th class="hide-sm">Phone</th><th>On loan</th><th class="hide-sm">Total borrowed</th><th class="hide-sm">Member since</th></tr></thead>
+    <tbody>${rows.map(m => `<tr class="click" data-id="${m.id}">
+      <td><b>${esc(m.name)}</b><div class="sub">${esc(m.email)}</div></td><td class="hide-sm">${esc(m.phone) || '—'}</td>
+      <td class="num">${m.active_loans ? `<span class="pill ok">${m.active_loans}</span>` : '0'}</td><td class="num hide-sm">${m.total_loans}</td>
+      <td class="hide-sm">${fmtDate(m.created_at.slice(0, 10))}</td></tr>`).join('')}</tbody></table>`
+    : `<div class="empty">${state.memberQ ? 'No members match.' : 'No members yet.'}</div>`;
+  $('#memberTable').querySelectorAll('tr[data-id]').forEach(tr => tr.onclick = () => memberDetail(+tr.dataset.id));
+}
+
+function memberForm(m = {}) {
+  const f = (name, label, type = 'text', extra = '') => `<div class="${extra}"><label for="f-${name}">${label}</label><input id="f-${name}" name="${name}" type="${type}" value="${esc(m[name])}" ${name === 'name' ? 'required' : ''}></div>`;
+  openDialog(`<form>
+    <h2>${m.id ? 'Edit member' : 'Add member'}</h2>
+    <div class="fields">
+      ${f('name', 'Name *', 'text', 'full')}${f('email', 'Email', 'email')}${f('phone', 'Phone', 'tel')}${f('address', 'Address', 'text', 'full')}
+      <div class="full"><label for="f-notes">Notes</label><textarea id="f-notes" name="notes" rows="3">${esc(m.notes)}</textarea></div>
+    </div>
+    <div class="err"></div>
+    <div class="dialog-actions">
+      ${m.id ? '<button type="button" class="btn danger left" id="delMember">Delete</button>' : ''}
+      <button type="button" class="btn" data-close>Cancel</button><button type="submit" class="btn primary">Save</button>
+    </div></form>`,
+    async data => { await api(m.id ? `/members/${m.id}` : '/members', { method: m.id ? 'PUT' : 'POST', body: data }); toast(m.id ? 'Member updated' : 'Member added'); });
+  if (m.id) $('#delMember').onclick = async () => {
+    if (!confirm(`Delete ${m.name}? Their loan history will also be removed.`)) return;
+    try { await api(`/members/${m.id}`, { method: 'DELETE' }); dlg.close(); toast('Member deleted'); render(); } catch (err) { dlg.querySelector('.err').textContent = err.message; }
+  };
+}
+
+async function memberDetail(id) {
+  const m = await api(`/members/${id}`);
+  openDialog(`<div class="body">
+    <h2>${esc(m.name)}</h2>
+    <dl class="kv">
+      <dt>Email</dt><dd>${m.email ? `<a href="mailto:${esc(m.email)}">${esc(m.email)}</a>` : '—'}</dd>
+      <dt>Phone</dt><dd>${esc(m.phone) || '—'}</dd>
+      <dt>Address</dt><dd>${esc(m.address) || '—'}</dd>
+      <dt>Member since</dt><dd>${fmtDate(m.created_at.slice(0, 10))}</dd>
+      ${m.notes ? `<dt>Notes</dt><dd>${esc(m.notes)}</dd>` : ''}
+    </dl>
+    <h3>Borrowing history (${m.loans.length})</h3>
+    ${m.loans.length ? `<table><tbody>${m.loans.map(l => `<tr><td>${esc(l.book_title)}<div class="sub">${fmtDate(l.loaned_on)} → ${fmtDate(l.due_on)}</div></td><td>${statusPill(l.status)}</td></tr>`).join('')}</tbody></table>` : '<div class="sub">Hasn’t borrowed anything yet.</div>'}
+    <div class="err"></div>
+    <div class="dialog-actions">
+      <button class="btn" id="edit">Edit</button>
+      <button class="btn primary" id="lend">Lend a book</button>
+      <button class="btn" data-close>Close</button>
+    </div></div>`);
+  $('#edit').onclick = () => memberForm(m);
+  $('#lend').onclick = () => loanForm({ member_id: m.id });
+}
+
+// ---------- Loans ----------
+async function loans() {
+  if (!$('#loanTable')) {
+    main.innerHTML = `
+      <h2>Loans</h2>
+      <div class="toolbar">
+        <select id="ls">
+          <option value="open">Open (active + overdue)</option><option value="overdue">Overdue only</option>
+          <option value="returned">Returned</option><option value="">All</option>
+        </select>
+        <span class="spacer"></span>
+        <button class="btn primary" id="addLoan">+ New loan</button>
+      </div>
+      <div class="table-wrap" id="loanTable"></div>`;
+    $('#ls').value = state.loanStatus;
+    $('#ls').onchange = e => { state.loanStatus = e.target.value; loans(); };
+    $('#addLoan').onclick = () => loanForm();
+  }
+  const rows = await api(`/loans?status=${state.loanStatus}`);
+  $('#loanTable').innerHTML = rows.length ? `<table>
+    <thead><tr><th>Book</th><th>Member</th><th class="hide-sm">Lent</th><th>Due</th><th>Status</th><th></th></tr></thead>
+    <tbody>${rows.map(l => `<tr>
+      <td><b>${esc(l.book_title)}</b><div class="sub">${esc(l.book_author)}</div></td>
+      <td>${esc(l.member_name)}</td><td class="hide-sm">${fmtDate(l.loaned_on)}</td>
+      <td>${fmtDate(l.due_on)}<div class="sub">${dueText(l)}</div></td><td>${statusPill(l.status)}</td>
+      <td class="actions">${l.returned_on ? '' : `<button class="btn sm" data-extend="${l.id}" title="Extend by 7 days">+7d</button> <button class="btn sm" data-return="${l.id}">Return</button>`}</td>
+    </tr>`).join('')}</tbody></table>` : '<div class="empty">No loans in this view.</div>';
+  bindReturns();
+}
+
+async function loanForm(pre = {}) {
+  const [bks, mbs] = await Promise.all([api('/books?availability=available'), api('/members')]);
+  if (!mbs.length) return toast('Add a member first');
+  if (!bks.length) return toast('No books are available to lend');
+  const today = new Date(), iso = d => new Date(d.getTime() - d.getTimezoneOffset() * 6e4).toISOString().slice(0, 10);
+  const due = new Date(today); due.setDate(due.getDate() + 14);
+  openDialog(`<form>
+    <h2>New loan</h2>
+    <div class="fields">
+      <div class="full"><label for="f-book">Book *</label><select id="f-book" name="book_id" required><option value="">Choose a book…</option>
+        ${bks.map(b => `<option value="${b.id}" ${b.id === pre.book_id ? 'selected' : ''}>${esc(b.title)} — ${esc(b.author)} (${b.available} available)</option>`).join('')}</select></div>
+      <div class="full"><label for="f-member">Member *</label><select id="f-member" name="member_id" required><option value="">Choose a member…</option>
+        ${mbs.map(m => `<option value="${m.id}" ${m.id === pre.member_id ? 'selected' : ''}>${esc(m.name)}${m.email ? ' — ' + esc(m.email) : ''}</option>`).join('')}</select></div>
+      <div><label for="f-lo">Lent on</label><input id="f-lo" type="date" name="loaned_on" value="${iso(today)}"></div>
+      <div><label for="f-du">Due on</label><input id="f-du" type="date" name="due_on" value="${iso(due)}"></div>
+      <div class="full"><label for="f-notes">Notes</label><input id="f-notes" name="notes"></div>
+    </div>
+    <div class="err"></div>
+    <div class="dialog-actions"><button type="button" class="btn" data-close>Cancel</button><button type="submit" class="btn primary">Lend</button></div>
+  </form>`, async data => { await api('/loans', { method: 'POST', body: data }); toast('Loan recorded'); });
+}
+
+// ---------- Boot ----------
+const initial = location.hash.slice(1);
+go(['dashboard', 'books', 'members', 'loans'].includes(initial) ? initial : 'dashboard');
+</script>
+</body>
+</html>
